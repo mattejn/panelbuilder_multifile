@@ -5,34 +5,42 @@ menuUnmix <- function(input,output,session,wsp) {
 
 serveUnmix <- function(input, output, session, wsp) {
   data <- shiny::reactiveValues(
-    inputMtx = NULL,
-    inputName = NULL,
-    outputMtx = NULL,
+    inputMtxList = NULL,
+    inputNameList = NULL,
+    outputNameList = NULL,
+    outputMtxList = NULL,
     outputColnames = NULL,
-    postCompensation = NULL,
-    postCompHistory = list(),
-    postCompPts = NULL
+    postCompensationList = NULL,
+    postCompHistoryList = list(),
+    postCompPtsList = NULL,
+    len=NULL,
+    currSelection=NULL
   )
 
   output$uiUnmixLoad <- shiny::renderUI(shiny::tagList(
     shiny::h3("Open a FCS"),
     shiny::fileInput('fileUnmixFCS',
-      "FCS for unmixing", accept='.fcs'),
+      "FCS for unmixing", accept='.fcs', multiple = T),
   ))
 
   observeEvent(input$fileUnmixFCS, {
-    data$inputMtx <- NULL
-    data$inputName <- character(0)
-    data$outputMtx <- NULL
+    data$len <- nrow(input$fileUnmixFCS)
+    tempList <- vector(mode = "list", length = data$len)
+    data$inputMtxList <- tempList
+    data$inputNameList <- tempList
+    data$outputMtxList <- tempList
+    rm(tempList)
     data$outputColnames <- NULL
     shiny::withProgress(tryCatch({
-        m <- flowCore::read.FCS(input$fileUnmixFCS$datapath)@exprs
+      for (i in 1:data$len){
+        m <- flowCore::read.FCS(input$fileUnmixFCS$datapath[i])@exprs
         colnames(m) <- unname(colnames(m))
-        data$inputMtx <- m
-        data$inputName <- input$fileUnmixFCS$name
-        setProgress(1)
+        data$inputMtxList[[i]] <- m
+        data$inputNameList[[i]] <- input$fileUnmixFCS$name[i]
+        incProgress(1)
+        }
       }, error=function(e) shiny::showNotification(type='error', paste("Loading failed:", e))),
-      message="Loading FCS...")
+      min=0,max=data$len,value=0,message="Loading FCS file(s)...")
   })
 
   output$uiUnmixControl <- shiny::renderUI(shiny::tagList(
@@ -49,14 +57,18 @@ serveUnmix <- function(input, output, session, wsp) {
     shiny::checkboxInput('unmixIncludeOriginals', "Retain original values in the raw channels that were used for unmixing", value=F),
     shiny::checkboxInput('unmixIncludeResiduals', "Include per-channel residuals", value=F),
     shiny::checkboxInput('unmixIncludeRMSE', "Include total unmixing RMSE information", value=T),
-    shiny::actionButton('doUnmix', "Run unmixing")
+    shiny::actionButton('doUnmix', "Run unmixing"),
+    shiny::selectInput('PickUnmixedFile', 'Select unmixed sample',data$outputNameList,multiple=F)
   ))
+  observeEvent(input$PickUnmixedFile, {
+    data$currSelection=which(data$outputNameList==input$PickUnmixedFile)
+  })
 
-  output$uiUnmixLoadedSample <- shiny::renderUI(if(is.null(data$inputMtx)) "No data loaded." else shiny::tagList(
-    shiny::div(shiny::strong("Loaded: "), data$inputName, paste0("(", nrow(data$inputMtx), " events)")),
+  output$uiUnmixLoadedSample <- shiny::renderUI(if(length(data$currSelection)==0) "No data loaded." else shiny::tagList(
+    shiny::div(shiny::strong("Loaded: "), data$inputNameList[[data$currSelection]], paste0("(", nrow(data$inputMtxList[[data$currSelection]]), " events)")),
     {
-      mcs <- matchingChans(data$inputMtx, getUnmixingInfo(wsp))
-      umcs <- nat.sort(colnames(data$inputMtx)[!colnames(data$inputMtx) %in% mcs])
+      mcs <- matchingChans(data$inputMtxList[[data$currSelection]], getUnmixingInfo(wsp))
+      umcs <- nat.sort(colnames(data$inputMtxList[[data$currSelection]])[!colnames(data$inputMtxList[[data$currSelection]]) %in% mcs])
       shiny::tagList(
         do.call(shiny::div, c(
           list(shiny::strong(paste0("Unmixing channels (",length(mcs),"):"))),
@@ -68,20 +80,24 @@ serveUnmix <- function(input, output, session, wsp) {
   ))
 
   observeEvent(input$doUnmix,
-    if(!is.null(data$inputMtx))
+    if(!is.null(data$inputMtxList))
       shiny::withProgress({
-        tryCatch(
-          data$outputMtx <- doUnmix(data$inputMtx, getUnmixingInfo(wsp),
+        tryCatch({
+          for (i in 1:data$len){
+            data$outputMtxList[[i]] <- doUnmix(data$inputMtxList[[i]], getUnmixingInfo(wsp),
             method=input$unmixMethod,
             fcNames=input$unmixIncludeFluorochromes,
             inclOrigs=input$unmixIncludeOriginals,
             inclResiduals=input$unmixIncludeResiduals,
-            inclRmse=input$unmixIncludeRMSE),
+            inclRmse=input$unmixIncludeRMSE)
+            incProgress(1)
+            data$outputNameList[[i]]=data$inputNameList[[i]]}},
           error=function(e) shiny::showNotification(type='error',
             paste("Unmixing failed:", e)))
-          data$outputColnames <- colnames(data$outputMtx)
-        shiny::setProgress(1)
-      }, message="Unmixing..."))
+          data$outputColnames <- colnames(data$outputMtxList[[1]])
+          
+      },min=0,max=data$len,value=0, message="Unmixing..."))
+
 
   output$uiUnmixPreview <- shiny::renderUI(shiny::tagList(
     shiny::h3("Result preview"),
@@ -100,7 +116,8 @@ serveUnmix <- function(input, output, session, wsp) {
           selected='level'),
         shiny::uiOutput('uiUnmixTools'),
         shiny::h4("Results"),
-        shiny::downloadButton('downloadUnmixFCS', "Download unmixed FCS")))
+        shiny::downloadButton('downloadUnmixFCS', "Download selected unmixed FCS"),
+        shiny::downloadButton('downloadAllUnmixFCS', "Download all unmixed FCS(s)")))
   ))
 
   output$uiUnmixPlotOpts <- shiny::renderUI(if(!is.null(data$outputColnames)) shiny::tagList(
@@ -138,15 +155,15 @@ serveUnmix <- function(input, output, session, wsp) {
       "Cofactor color (dB)",,
       min=-10, max=80, step=1, value=30)
   ))
-
-  output$uiUnmixPlot <- shiny::renderUI(if(!is.null(data$outputMtx)) shiny::tagList(
+  
+  output$uiUnmixPlot <- shiny::renderUI(if(length(data$currSelection)>0) shiny::tagList(
     shiny::plotOutput('plotUnmix',
-      width="30em",
-      height="30em",
-      click=if(input$unmixTool=='level') 'clickUnmixPlot' else NULL,
-      brush=if(input$unmixTool=='gate') shiny::brushOpts('brushUnmixPlot')),
-    if(!is.null(data$outputMtx))
-      shiny::div(paste0("(", nrow(data$outputMtx), " events)"))
+                      width="30em",
+                      height="30em",
+                      click=if(input$unmixTool=='level') 'clickUnmixPlot' else NULL,
+                      brush=if(input$unmixTool=='gate') shiny::brushOpts('brushUnmixPlot')),
+    if(!is.null(data$outputMtxList[[data$currSelection]]))
+      shiny::div(paste0("(", nrow(data$outputMtxList[[data$currSelection]]), " events)"))
   ))
 
   getTransFns <- function() list(
@@ -156,9 +173,12 @@ serveUnmix <- function(input, output, session, wsp) {
     itx = if(input$unmixAsinhX) function(v)sinh(v)*db2e(input$unmixCofX) else identity,
     ity = if(input$unmixAsinhY) function(v)sinh(v)*db2e(input$unmixCofY) else identity)
 
-  getCompData <- function()
-    if(is.null(data$postCompensation)) data$outputMtx
-    else data$outputMtx %*% data$postCompensation
+  getCompData <- function(selected=data$currSelection)
+    if(is.null(data$postCompensationList[[selected]])){ 
+      data$outputMtxList[[selected]]
+      }else{
+      data$outputMtxList[[selected]] %*% data$postCompensationList[[selected]]
+      }
 
   output$uiUnmixTools <- shiny::renderUI(if(input$unmixTool=='level') shiny::tagList(
     shiny::div("the tool aligns the selected × cross to the level of + cross"),
@@ -172,63 +192,64 @@ serveUnmix <- function(input, output, session, wsp) {
       shiny::actionButton('doUnmixGateOut', "Remove gate")))
 
   observeEvent(input$doUnmixLevelReset, {
-    data$postCompensation <- diag(1, ncol(data$outputMtx))
-    colnames(data$postCompensation) <- colnames(data$outputMtx)
-    rownames(data$postCompensation) <- colnames(data$outputMtx)
-    data$postCompHistory <- list()
-    data$postCompPts <- NULL
+    data$postCompensationList[[data$currSelection]] <- diag(1, ncol(data$outputMtxList[[data$currSelection]]))
+    colnames(data$postCompensationList[[data$currSelection]]) <- colnames(data$outputMtxList[[data$currSelection]])
+    rownames(data$postCompensationList[[data$currSelection]]) <- colnames(data$outputMtxList[[data$currSelection]])
+    data$postCompHistoryList[[data$currSelection]] <- list()
+    data$postCompPtsList[[data$currSelection]] <- NULL
   })
 
-  observeEvent(input$doUnmixLevelUndo, if(length(data$postCompHistory)>0) {
-    data$postCompensation <- data$postCompHistory[[1]]
-    data$postCompHistory <- data$postCompHistory[-1]
+  observeEvent(input$doUnmixLevelUndo, if(length(data$postCompHistoryList[[1]])>0) {
+    data$postCompensation[[1]] <- data$postCompHistory[[data$currSelection]][[1]]
+    data$postCompHistory[[data$currSelection]] <- data$postCompHistory[[data$currSelection]][-1]
   })
 
-  observeEvent(data$outputMtx, {
-    if(is.null(data$outputMtx))
+  observeEvent(data$outputMtxList, {
+    if(length(data$currSelection)>0){
+    if(is.null(data$outputMtxList[[data$currSelection]]))
       data$postCompensation <- NULL
     else {
-      data$postCompensation <- diag(1,ncol(data$outputMtx))
-      colnames(data$postCompensation) <- colnames(data$outputMtx)
-      rownames(data$postCompensation) <- colnames(data$outputMtx)
+      data$postCompensationList[[data$currSelection]] <- diag(1,ncol(data$outputMtxList[[data$currSelection]]))
+      colnames(data$postCompensationList[[data$currSelection]]) <- colnames(data$outputMtxList[[data$currSelection]])
+      rownames(data$postCompensationList[[data$currSelection]]) <- colnames(data$outputMtxList[[data$currSelection]])
     }
     data$postCompHistory <- list()
     data$postCompPts <- NULL
-  })
+  }})
 
-  observeEvent(input$unmixPlotX,
-    data$postCompPts <- NULL)
+  observeEvent(input$unmixPlotXList,
+    data$postCompPtsList[[data$currSelection]] <- NULL)
 
-  observeEvent(input$unmixPlotY,
-    data$postCompPts <- NULL)
+  observeEvent(input$unmixPlotYList,
+    data$postCompPtsList[[data$currSelection]] <- NULL)
 
   observeEvent(input$clickUnmixPlot, {
     ts <- getTransFns()
-    data$postCompPts <- rbind(c(ts$itx(input$clickUnmixPlot$x), ts$ity(input$clickUnmixPlot$y)), data$postCompPts)
-    if(nrow(data$postCompPts)>2) data$postCompPts <- data$postCompPts[1:2,,drop=F]
+    data$postCompPtsList[[data$currSelection]] <- rbind(c(ts$itx(input$clickUnmixPlot$x), ts$ity(input$clickUnmixPlot$y)), data$postCompPtsList[[data$currSelection]])
+    if(nrow(data$postCompPtsList[[data$currSelection]])>2) data$postCompPtsList[[data$currSelection]] <- data$postCompPtsList[[data$currSelection]][1:2,,drop=F]
   })
 
   doAlign <- function(tr) {
-    data$postCompHistory <- c(list(data$postCompensation), data$postCompHistory)
+    data$postCompHistory[[data$currSelection]] <- c(list(data$postCompensationList[[data$currSelection]]), data$postCompHistoryList[[data$currSelection]])
     ds <- c(input$unmixPlotX, input$unmixPlotY)
-    data$postCompensation[ds,ds] <- data$postCompensation[ds,ds] %*% tr
-    data$postCompPts <- NULL
+    data$postCompensationList[[data$currSelection]][ds,ds] <- data$postCompensationList[[data$currSelection]][ds,ds] %*% tr
+    data$postCompPtsList[[data$currSelection]] <- NULL
   }
 
-  observeEvent(input$doUnmixLevelH, if(!is.null(data$postCompPts) && nrow(data$postCompPts)==2) {
-    dstX <- data$postCompPts[1,1]
-    dstY <- data$postCompPts[1,2]
-    srcX <- data$postCompPts[2,1]
-    srcY <- data$postCompPts[2,2]
+  observeEvent(input$doUnmixLevelH, if(!is.null(data$postCompPtsList[[data$currSelection]]) && nrow(data$postCompPtsList[[data$currSelection]])==2) {
+    dstX <- data$postCompPtsList[[data$currSelection]][1,1]
+    dstY <- data$postCompPtsList[[data$currSelection]][1,2]
+    srcX <- data$postCompPtsList[[data$currSelection]][2,1]
+    srcY <- data$postCompPtsList[[data$currSelection]][2,2]
     if(abs(dstX-srcX)<1) shiny::showNotification(type='error', "Source and destination horizontal coordinates too close")
     else doAlign(matrix(c(1,0,(srcY-dstY)/(dstX-srcX),1), 2))
   })
 
-  observeEvent(input$doUnmixLevelV, if(!is.null(data$postCompPts) && nrow(data$postCompPts)==2) {
-    dstX <- data$postCompPts[1,1]
-    dstY <- data$postCompPts[1,2]
-    srcX <- data$postCompPts[2,1]
-    srcY <- data$postCompPts[2,2]
+  observeEvent(input$doUnmixLevelV, if(!is.null(data$postCompPtsList[[data$currSelection]]) && nrow(data$postCompPtsList[[data$currSelection]])==2) {
+    dstX <- data$postCompPtsList[[data$currSelection]][1,1]
+    dstY <- data$postCompPtsList[[data$currSelection]][1,2]
+    srcX <- data$postCompPtsList[[data$currSelection]][2,1]
+    srcY <- data$postCompPtsList[[data$currSelection]][2,2]
     if(abs(dstY-srcY)<1) shiny::showNotification(type='error', "Source and destination vertical coordinates too close")
     else doAlign(matrix(c(1,(srcX-dstX)/(dstY-srcY),0,1), 2))
   })
@@ -236,21 +257,23 @@ serveUnmix <- function(input, output, session, wsp) {
   doGate <- function(b, inv) if(!is.null(b)) {
     ts <- getTransFns()
     flt <- xor(inv,
-      data$outputMtx[,input$unmixPlotX] >= ts$itx(b$xmin) &
-      data$outputMtx[,input$unmixPlotX] <= ts$itx(b$xmax) &
-      data$outputMtx[,input$unmixPlotY] >= ts$ity(b$ymin) &
-      data$outputMtx[,input$unmixPlotY] <= ts$ity(b$ymax))
-    data$outputMtx <- data$outputMtx[flt,,drop=F]
+      data$outputMtxList[[data$currSelection]][,input$unmixPlotX] >= ts$itx(b$xmin) &
+      data$outputMtxList[[data$currSelection]][,input$unmixPlotX] <= ts$itx(b$xmax) &
+      data$outputMtxList[[data$currSelection]][,input$unmixPlotY] >= ts$ity(b$ymin) &
+      data$outputMtxList[[data$currSelection]][,input$unmixPlotY] <= ts$ity(b$ymax))
+    data$outputMtxList[[data$currSelection]] <- data$outputMtxList[[data$currSelection]][flt,,drop=F]
   }
 
   observeEvent(input$doUnmixGateIn, doGate(input$brushUnmixPlot, F))
   observeEvent(input$doUnmixGateOut, doGate(input$brushUnmixPlot, T))
 
+ 
+  
   output$plotUnmix <- shiny::renderPlot({
     ts <- getTransFns()
     d <- getCompData()
     par(mar=c(0,0,0,0))
-    if(!is.null(data$outputMtx) && input$unmixPlotX!='' && input$unmixPlotY!='') {
+    if(!is.null(data$outputMtxList[[data$currSelection]]) && input$unmixPlotX!='' && input$unmixPlotY!='') {
       EmbedSOM::PlotEmbed(
         cbind(ts$tx(d[,input$unmixPlotX]), ts$ty(d[,input$unmixPlotY])),
         data=if(input$unmixPlotCol=='(Density)') NULL else cbind(ts$tc(d[,input$unmixPlotCol])),
@@ -260,15 +283,41 @@ serveUnmix <- function(input, output, session, wsp) {
       abline(h=0)
       abline(v=0)
       if(input$unmixTool=='level') points(
-          ts$tx(rev(data$postCompPts[,1])),
-          ts$ty(rev(data$postCompPts[,2])),
+          ts$tx(rev(data$postCompPtsList[[data$currSelection]][,1])),
+          ts$ty(rev(data$postCompPtsList[[data$currSelection]][,2])),
           cex=4, lwd=4, pch=c(4,3), col='#00cc00')
     }
   })
 
   output$downloadUnmixFCS <- shiny::downloadHandler(
-    filename=function() paste0("pbUnmixed_",data$inputName),
+    filename=function() paste0("pbUnmixed_",data$inputNameList[[data$currSelection]]),
     content=function(conn) flowCore::write.FCS(new('flowFrame', exprs=getCompData()), conn)
+  )
+  
+  output$downloadAllUnmixFCS <- shiny::downloadHandler(
+    filename = function(){
+      paste0("unmixed_", Sys.Date(), ".zip")
+    },
+    content = function(file){
+      
+      temp_directory <- file.path(tempdir(), as.integer(Sys.time()))
+      dir.create(temp_directory)
+      for (i in 1:length(data$outputNameList)){
+        file_name <- paste0("pbUnmixed_",data$inputNameList[[i]])
+        flowCore::write.FCS(new('flowFrame', exprs=getCompData(selected=i)), file.path(temp_directory, file_name))
+      }
+      
+      
+      zip::zip(
+        zipfile = file,
+        files = dir(temp_directory),
+        root = temp_directory
+      )
+      
+      
+      
+    },
+    contentType = "application/zip"
   )
 
   output$uiUnmix <- shiny::renderUI(shiny::tagList(

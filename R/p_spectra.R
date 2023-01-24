@@ -84,6 +84,27 @@ serveSpectraBrowser <- function(input, output, session, wsp) {
     data$filter <- unlist(sapply(wsp$spectra, function(x)
       all(sapply(names(tgt),function(nm) x[[nm]] %in% tgt[[nm]]))))
   })
+  
+  observeEvent(input$doSpectraToPanelAll, {
+  if (length(dynObservers)>0){
+    for(sid in 1:length(wsp$spectra)){
+      if(spectrumExistsIn(wsp$spectra[[sid]], wsp$panelSpectra, fields=c('antigen','fluorochrome')))
+        shiny::showNotification(type='error',
+                                paste0(wsp$spectra[[sid]]$antigen,"/",wsp$spectra[[sid]]$fluorochrome," already in panel"))
+      else {
+        wsp$panelSpectra <- c(wsp$panelSpectra, list(wsp$spectra[[sid]]))
+        defaulted <- F
+        if(is.null(wsp$panelAssignment[[wsp$spectra[[sid]]$antigen]])) {
+          defaulted <- T
+          wsp$panelAssignment[[wsp$spectra[[sid]]$antigen]] <- wsp$spectra[[sid]]$fluorochrome
+        }
+        shiny::showNotification(type='message',
+                                paste0(wsp$spectra[[sid]]$antigen,"/",wsp$spectra[[sid]]$fluorochrome," added",
+                                       if(defaulted) " (as default)"))
+      }
+    }
+  }
+  })
 
   observeEvent(input$fileSpectraUpload, {
     #TODO: merge instead of replacing
@@ -107,7 +128,9 @@ serveSpectraBrowser <- function(input, output, session, wsp) {
         shiny::h3("Search"),
         spectrumMetadataForm('spectraSearchForm',
           wsp$spectra, create=F, multiple=T, defaultAll=T),
-        shiny::actionButton('doSpectraFilter', "Filter!")),
+        shiny::actionButton('doSpectraFilter', "Filter!"),
+        shiny::actionButton('doSpectraToPanelAll', "All to panel")
+        ),
       shiny::column(4,
         shiny::h3("Import/Export"),
         shiny::fileInput('fileSpectraUpload',

@@ -48,7 +48,6 @@ matchingChans <- function(mtx, ui) {
 #' @export
 doUnmix <- function(mtx, ui, method='ols', fcNames=T, inclOrigs=F, inclResiduals=F, inclRmse=T) {
   mc <- matchingChans(mtx, ui)
-
   if(length(mc)==0) return(mtx) # nothing to do
 
   coefficients <- NULL
